@@ -127,6 +127,11 @@ CONNECTION-TYPE."
 	(set-process-filter process 'magit-bash-filter)))
     buf))
 
+(defun magit-bash--stderr (file)
+  (if file
+      (format "; if [ -e '%s' ]; then cat '%s'; fi" file file)
+    ""))
+
 (defun magit-bash--process-git (destination args &optional input)
   "Execute a Git command via the Magit Bash process."
   (let* ((buffer (magit-bash-buffer default-directory
