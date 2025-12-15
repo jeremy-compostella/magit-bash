@@ -38,7 +38,15 @@
   "Name of the magit bash buffer."
   :type 'string)
 
-(defvar-local magit-bash--git-tree nil
+(defcustom magit-bash-debug nil
+  "If non-nil, enable debug messages for Magit Bash."
+  :type 'boolean)
+
+(defvar-local magit-bash--git-dir nil
+  "Buffer-local variable to cache the Git tree object for the current
+repository.")
+
+(defvar-local magit-bash--git-dir-truename nil
   "Buffer-local variable to cache the Git tree object for the current
 repository.")
 
@@ -78,11 +86,11 @@ This variable is automatically set when creating a new Magit Bash buffer via
 `magit-bash-new-buffer', and is used to ensure the correct process connection
 type is chosen for each Git command execution.")
 
-(defun magit-bash--git-tree (dir)
+(defun magit-bash--git-dir (dir)
   (with-temp-buffer
     (setq default-directory dir)
     (if (= (process-file "git" nil t nil "rev-parse" "--git-dir") 0)
-	(file-truename (string-trim (buffer-string)))
+	(string-trim (buffer-string))
       (error "Failed to read the git tree"))))
 
 (defun magit-bash-new-buffer (dir connection-type)
@@ -92,23 +100,26 @@ CONNECTION-TYPE."
 	      (setq default-directory dir)
 	      (with-parsed-tramp-file-name (expand-file-name dir) nil
 		(if (= (process-file "git" nil t nil "rev-parse" "--show-toplevel") 0)
-		    (tramp-make-tramp-file-name v (string-trim (buffer-string)))
-		  (error "Cannot find .git directory for %s" dir)))))
-  (let* ((buf-name (format magit-bash-buffer-name))
-	 (buffer (generate-new-buffer buf-name)))
-    (uniquify-rationalize-file-buffer-names buf-name default-directory buffer)
-    (with-current-buffer buffer
-      (setq default-directory (concat dir "/")
-	    magit-bash--git-tree (magit-bash--git-tree default-directory)
-	    magit-bash-connection-type connection-type))
-    buffer))
+		    (tramp-make-tramp-file-name v (string-trim (buffer-string)))))))
+  (if dir
+    (let* ((buf-name (format magit-bash-buffer-name))
+	   (buffer (generate-new-buffer buf-name)))
+      (uniquify-rationalize-file-buffer-names buf-name default-directory buffer)
+      (with-current-buffer buffer
+	(let ((git-dir (magit-bash--git-dir default-directory)))
+	  (setq default-directory (concat dir "/")
+		magit-bash--git-dir git-dir
+		magit-bash--git-dir-truename (file-truename git-dir)
+		magit-bash-connection-type connection-type)))
+      buffer)
+    (error "No git repository found")))
 
 (defsubst magit-bash--bash-buffer-p (connection-type filename buffer)
   "Return non-nil if BUFFER is a Magit Bash buffer."
   (with-current-buffer buffer
     (and (eq magit-bash-connection-type connection-type)
 	 (or (string-prefix-p default-directory filename)
-	     (string-prefix-p magit-bash--git-tree filename)))))
+	     (string-prefix-p magit-bash--git-dir-truename filename)))))
 
 (defun magit-bash--existing-buffer (filename connection-type)
   (cl-find filename (magit-bash-buffers)
@@ -132,20 +143,19 @@ CONNECTION-TYPE."
       (format "; if [ -e '%s' ]; then cat '%s'; fi" file file)
     ""))
 
-(defun magit-bash--process-git (destination args &optional input)
-  "Execute a Git command via the Magit Bash process."
+(defun magit-bash-process-cmd (cmd input destination)
+  "Execute PROGRAM with ARGS via the Magit Bash process."
   (let* ((buffer (magit-bash-buffer default-directory
 				    (if (and input
 					     (goto-char (point-min))
 					     (search-forward "\r" nil t))
 					'nil 'pty)))
+	 (current-dir (with-parsed-tramp-file-name default-directory c
+			c-localname))
 	 res found ret)
     (with-current-buffer buffer
       (let* ((process (get-buffer-process (current-buffer)))
 	     start stderr
-	     (cmd (concat "git" " "
-			  (mapconcat (lambda (x) (format "\"%s\"" x))
-				     (magit-process-git-arguments args) " ")))
 	     (loop 0))
 	(when input
 	  (setf input (replace-regexp-in-string "'" "'\"'\"'" input)
@@ -154,9 +164,12 @@ CONNECTION-TYPE."
 		   (stringp (cadr destination)))
 	  (setf stderr (cadr destination)
 		cmd (format "%s 2>'%s'" cmd stderr)))
-	(setf cmd (format "%s ; echo __MAGIT_BASH_DONE_$?__ %s\n"
+	(setf cmd (format "%s ; echo __MAGIT_BASH_DONE_$?__ %s"
 			  cmd (magit-bash--stderr stderr)))
-	(insert cmd "\n")
+	(setf cmd (concat "cd " current-dir "; " cmd "; cd - > /dev/null\n"))
+	(save-excursion
+	  (goto-char (point-max))
+	  (insert cmd "\n"))
 	(process-send-string process cmd)
 	(setf start (point-max-marker))
 	(while (not found)
@@ -173,36 +186,91 @@ CONNECTION-TYPE."
 		  (unless (string= err "\n")
 		    (with-temp-buffer
  		      (insert err)
-		      (write-region (point-min) (point-max) stderr))))))))))
+		      (write-region (point-min) (point-max) stderr)))))))))
+      (unless magit-bash-debug
+	(erase-buffer)))
     (when (and (= ret 0) destination)
       (insert res))
     ret))
 
-(defun magit-bash--show-cdup2 (dir)
-  (when-let* ((buffer (magit-bash--existing-buffer dir 'pty))
-	      (root (with-current-buffer buffer
-		      default-directory))
-	      (sub (string-trim (substring dir (length root)) nil "/")))
-    (concat (if (string-empty-p sub)
-		""
-	      (mapconcat (lambda (_) "..")
-			 (cl-delete "" (split-string sub "/")) "/"))
-	    "\n")))
+(defun magit-bash--process-git (destination args &optional input)
+  "Execute a Git command via the Magit Bash process."
+  (let ((cmd (concat "git " (mapconcat (lambda (x) (format "\"%s\"" x))
+				       (magit-process-git-arguments args)
+				       " "))))
+    (magit-bash-process-cmd cmd input destination)))
+
+(defun magit-bash-load-files-attributes (files)
+  (let* ((test-and-props '(("-e" . "exists-p")
+			   ("-r" . "readable-p")
+			   ("-w" . "writable-p")
+			   ("-d" . "directory-p")))
+	 (tests (mapconcat (lambda (tp)
+			     (format "if [ %s \"$file\" ]; then echo -n ' %s'; fi"
+				     (car tp) (cdr tp)))
+			   test-and-props " ; "))
+	 (cmd (concat "for file in "
+		      (mapconcat (lambda (file)
+				   (format "'%s' "
+					   (tramp-file-name-localname
+					    (tramp-dissect-file-name file))))
+				 files " ")
+		      "; do " tests
+		      "; echo ''"
+		      "; done")))
+    (with-temp-buffer
+      (let ((ret (magit-bash-process-cmd cmd nil t)))
+	(unless (= ret 0)
+	  (error "Failed to read files attributes")))
+      (goto-char (point-min))
+      (dolist (file files)
+	(let ((res (split-string (buffer-substring-no-properties
+				  (line-beginning-position) (line-end-position)))))
+	  (dolist (tp test-and-props)
+	    (let ((localname (tramp-file-name-localname (tramp-dissect-file-name file))))
+	      (message "%s %s %s" localname (cdr tp) (if (member (cdr tp) res) t nil))
+	      (with-parsed-tramp-file-name file nil
+		(tramp-set-file-property
+		 v localname (concat "file-" (cdr tp))
+		 (if (member (cdr tp) res) t nil)))))
+	  (forward-line))))))
+
+(defvar-local magit-bash-git-tree-files '())
+
+(defun magit-bash-get-file-property (orig-fun &rest args)
+  (let* ((key (car args))
+	 (localname (cadr args))
+	 (filename (tramp-make-tramp-file-name key localname)))
+    (when-let ((buffer (magit-bash--existing-buffer filename 'pty)))
+      (with-current-buffer buffer
+	(when (or (string-prefix-p (concat default-directory magit-bash--git-dir)
+				   filename)
+		  (string-prefix-p magit-bash--git-dir-truename filename))
+	  (let ((property (caddr args))
+		(default (cadddr args)))
+	    (add-to-list 'magit-bash-git-tree-files filename)
+	    (let ((value (funcall orig-fun key localname property tramp-cache-undefined)))
+	      (when (eq value tramp-cache-undefined)
+		(magit-bash-load-files-attributes magit-bash-git-tree-files)))))))
+    (apply orig-fun args)))
 
 (defun magit-bash--show-cdup (dir)
-  (when-let* ((buffer (magit-bash--existing-buffer dir 'pty))
+  (when-let* ((buffer (magit-bash-buffer dir 'pty))
 	      (root (with-current-buffer buffer
-		      default-directory))
-	      (sub (substring dir (length root))))
-    (insert (if (string-empty-p sub)
+		      default-directory)))
+    (insert (if (with-current-buffer buffer
+		  (string-prefix-p magit-bash--git-dir-truename dir))
 		""
-	      (mapconcat (lambda (_) "..")
-			 (cl-delete "" (split-string sub "/")) "/"))
+	      (let ((sub (substring dir (length root))))
+		(if (string-empty-p sub)
+		    ""
+		  (mapconcat (lambda (_) "..")
+			     (cl-delete "" (split-string sub "/")) "/"))))
 	    "\n")
     0))
 
 (defun magit-bash--show-toplevel (dir)
-  (when-let* ((buffer (magit-bash--existing-buffer dir 'pty))
+  (when-let* ((buffer (magit-bash-buffer dir 'pty))
 	      (root (with-current-buffer buffer
 		      default-directory)))
     (with-parsed-tramp-file-name root r
@@ -211,13 +279,20 @@ CONNECTION-TYPE."
 
 (defun magit-bash--revparse (orig-fun &rest args)
   (let ((git-args (flatten-list (cdr args))))
-    (or (and (stringp (car git-args))
-	     (string= (car git-args) "rev-parse")
-	     (or (and (string= (cadr git-args) "--show-cdup")
-		      (magit-bash--show-cdup default-directory))
-		 (and (string= (cadr git-args) "--show-toplevel")
-		      (magit-bash--show-toplevel default-directory))))
-	(apply orig-fun args))))
+    (if (and (stringp (car git-args)) (string= (car git-args) "rev-parse"))
+	(cond ((string= (cadr git-args) "--show-cdup")
+	       (magit-bash--show-cdup default-directory))
+	      ((string= (cadr git-args) "--show-toplevel")
+	       (magit-bash--show-toplevel default-directory))
+	      ((string= (cadr git-args) "--git-dir")
+	       (when-let* ((buf (magit-bash--existing-buffer
+				 default-directory 'pty))
+			   (git-dir (with-current-buffer buf
+				      magit-bash--git-dir)))
+		 (insert git-dir)
+		 0))
+	      ((apply orig-fun args)))
+      (apply orig-fun args))))
 
 (defun magit-bash-process-git (orig-fun &rest args)
   "Advice for `magit-process-git' to optionally route Git commands through
@@ -289,13 +364,17 @@ Note: This mode may not be compatible with remote (TRAMP) buffers."
 	(advice-add 'tramp-sh-handle-file-writable-p
 		    :around #'magit-bash--tramp-sh-handle-file-writable-p)
 	(advice-add 'magit-bash--process-git
-		    :around #'magit-bash--revparse))
+		    :around #'magit-bash--revparse)
+	(advice-add 'tramp-get-file-property
+		    :around #'magit-bash-get-file-property))
     (advice-remove 'magit-process-git #'magit-bash-process-git)
     (advice-remove 'magit-run-git-with-input #'magit-bash-run-git-with-input)
     (advice-remove 'vc-responsible-backend #'magit-bash--vc-responsible-backend)
     (advice-remove 'tramp-sh-handle-file-writable-p
 		   #'magit-bash--tramp-sh-handle-file-writable-p)
     (advice-remove 'magit-bash--process-git
-		   #'magit-bash--revparse)))
+		   #'magit-bash--revparse)
+    (advice-remove 'tramp-get-file-property
+		   #'magit-bash-get-file-property)))
 
 (provide 'magit-bash)
