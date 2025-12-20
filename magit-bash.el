@@ -42,6 +42,12 @@
   "If non-nil, enable debug messages for Magit Bash."
   :type 'boolean)
 
+(defcustom magit-bash-feedback 'progress
+  "Type of feedback to show during long operations.
+Could be 'progress or 'performance."
+  :type '(choice (const :tag "Progress reporter" progress)
+		 (const :tag "Performance messages" performance)))
+
 (defvar-local magit-bash--git-dir nil
   "Buffer-local variable to cache the Git tree object for the current
 repository.")
@@ -195,10 +201,20 @@ CONNECTION-TYPE."
 
 (defun magit-bash--process-git (destination args &optional input)
   "Execute a Git command via the Magit Bash process."
-  (let ((cmd (concat "git " (mapconcat (lambda (x) (format "\"%s\"" x))
-				       (magit-process-git-arguments args)
-				       " "))))
-    (magit-bash-process-cmd cmd input destination)))
+  (cl-flet ((escape-double-quote (str)
+	      (with-temp-buffer
+		(insert str)
+		(goto-char (point-min))
+		(while (search-forward "\"" nil t)
+		  (save-excursion
+		    (goto-char (match-beginning 0))
+		    (insert "\\")))
+		(buffer-string))))
+    (let ((cmd (concat "git " (mapconcat (apply-partially #'format "\"%s\"")
+					 (mapcar #'escape-double-quote
+						 (magit-process-git-arguments args))
+					 " "))))
+      (magit-bash-process-cmd cmd input destination))))
 
 (defun magit-bash-load-files-attributes (files)
   (let* ((test-and-props '(("-e" . "file-exists-p")
@@ -230,12 +246,16 @@ CONNECTION-TYPE."
 				  (line-beginning-position) (line-end-position)))))
 	  (dolist (tp test-and-props)
 	    (let ((localname (tramp-file-name-localname (tramp-dissect-file-name file))))
+	      ;; (message "%s %s %s" localname (cdr tp) (if (member (cdr tp) res) t nil))
 	      (with-parsed-tramp-file-name file nil
 		(tramp-set-file-property
 		 v localname (cdr tp) (if (member (cdr tp) res) t nil)))))
 	  (with-parsed-tramp-file-name file nil
 	    (when (member "file-exists-p" res)
 	      (forward-line)
+	      ;; (message "truename: %s" (buffer-substring-no-properties
+	      ;; 			       (line-beginning-position)
+	      ;; 			       (line-end-position)))
 	      (tramp-set-file-property
 	       v localname "file-truename"
 	       (buffer-substring-no-properties (line-beginning-position)
@@ -262,7 +282,7 @@ CONNECTION-TYPE."
     (apply orig-fun args)))
 
 (defun magit-bash--show-cdup (dir)
-  (when-let* ((buffer (magit-bash-buffer dir 'pty))
+  (when-let* ((buffer (magit-bash--existing-buffer dir 'pty))
 	      (root (with-current-buffer buffer
 		      default-directory)))
     (insert (if (with-current-buffer buffer
@@ -275,6 +295,52 @@ CONNECTION-TYPE."
 			     (cl-delete "" (split-string sub "/")) "/"))))
 	    "\n")
     0))
+
+(defvar magit-bash--progress nil)
+
+(defun magit-bash--git-cmd-wrapper (orig-fun &rest args)
+  (when magit-bash-feedback
+    (progress-reporter-update magit-bash--progress))
+  (let ((start-time (current-time))
+	(ret (apply orig-fun args))
+	suffix)
+    (when (eq magit-bash-feedback 'performance)
+      (let ((cmd (propertize (mapconcat #'identity (append (list "git")
+							   (flatten-list (cddr args)))
+					" ")
+			     'face 'font-lock-string-face)))
+	(setf suffix (format "%s took %.02fs"
+  			     cmd (float-time (time-subtract (current-time) start-time))))))
+    (progress-reporter-update magit-bash--progress nil suffix)
+    ret))
+
+(defun magit-bash--entry-wrapper (orig-fun &rest args)
+  (let* ((fun-name (propertize (subr-name orig-fun) 'face
+			       'font-lock-function-call-face)))
+    (when magit-bash-feedback
+      (setq magit-bash--progress (make-progress-reporter (format "%s..." fun-name))))
+    (let ((start-time (current-time))
+	  (ret (apply orig-fun args)))
+      (cond ((eq magit-bash-feedback 'performance)
+	     (let ((msg (format "%s done. It took %.02f seconds." fun-name
+				(float-time (time-subtract (current-time)
+							   start-time)))))
+	       (message msg)))
+	    ((eq magit-bash-feedback 'progress)
+	     (progress-reporter-done magit-bash--progress)))
+      ret)))
+
+(dolist (entry '(magit-bash--revparse))
+  (advice-add entry :around #'magit-bash--git-cmd-wrapper))
+
+(advice-add 'magit-process-git :around #'magit-bash--git-cmd-wrapper)
+
+(dolist (entry '(magit-status
+		 magit-refresh
+		 magit-checkout
+		 magit-rebase
+		 magit-rebase-interactive))
+  (advice-add entry :around #'magit-bash--entry-wrapper))
 
 (defun magit-bash--show-toplevel (dir)
   (when-let* ((buffer (magit-bash-buffer dir 'pty))
@@ -368,8 +434,6 @@ Note: This mode may not be compatible with remote (TRAMP) buffers."
 		    :around #'magit-bash-run-git-with-input)
 	(advice-add 'vc-responsible-backend
 		    :around #'magit-bash--vc-responsible-backend)
-	(advice-add 'tramp-sh-handle-file-writable-p
-		    :around #'magit-bash--tramp-sh-handle-file-writable-p)
 	(advice-add 'magit-bash--process-git
 		    :around #'magit-bash--revparse)
 	(advice-add 'tramp-get-file-property
