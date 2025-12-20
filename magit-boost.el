@@ -395,11 +395,6 @@ This avoids invoking the slower default implementation of
       "Git"
     (apply orig-fun args)))
 
-(defun magit-boost--tramp-sh-handle-file-writable-p (orig-fun &rest args)
-  (if (magit-boost--existing-buffer (car args) 'pty)
-      t
-    (apply orig-fun args)))
-
 (define-minor-mode magit-boost-mode
   "Minor mode to accelerate Magit Git commands by routing them through a
 persistent Bash process.
@@ -436,8 +431,6 @@ Note: This mode may not be compatible with remote (TRAMP) buffers."
     (advice-remove 'magit-process-git #'magit-boost-process-git)
     (advice-remove 'magit-run-git-with-input #'magit-boost-run-git-with-input)
     (advice-remove 'vc-responsible-backend #'magit-boost--vc-responsible-backend)
-    (advice-remove 'tramp-sh-handle-file-writable-p
-		   #'magit-boost--tramp-sh-handle-file-writable-p)
     (advice-remove 'tramp-get-file-property
 		   #'magit-boost-get-file-property)
     (advice-remove #'magit-process-git
