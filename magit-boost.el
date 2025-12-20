@@ -323,8 +323,8 @@ CONNECTION-TYPE."
     ret))
 
 (defun magit-boost--entry-wrapper (orig-fun &rest args)
-  (let* ((fun-name (propertize "magit" 'face
-			       'font-lock-function-call-face)))
+  (let* ((fun-name (propertize (if (subrp orig-fun) (subr-name orig-fun) "magit")
+			       'face 'font-lock-function-call-face)))
     (when magit-boost-feedback
       (setq magit-boost--progress (make-progress-reporter (format "%s..." fun-name))))
     (let ((start-time (current-time))
