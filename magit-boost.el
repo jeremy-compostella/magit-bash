@@ -330,7 +330,7 @@ CONNECTION-TYPE."
     (let ((start-time (current-time))
 	  (ret (apply orig-fun args)))
       (cond ((eq magit-boost-feedback 'performance)
-	     (let ((msg (format "%s done. It took %.02f seconds." fun-name
+	     (let ((msg (format "%s... done, took %.02fs" fun-name
 				(float-time (time-subtract (current-time)
 							   start-time)))))
 	       (message msg)))
