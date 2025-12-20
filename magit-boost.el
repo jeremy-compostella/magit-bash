@@ -48,6 +48,13 @@ Could be 'progress or 'performance."
   :type '(choice (const :tag "Progress reporter" progress)
 		 (const :tag "Performance messages" performance)))
 
+(defcustom magit-boost-entry-points '(magit-status
+				      magit-refresh
+				      magit-checkout
+				      magit-rebase
+				      magit-rebase-interactive)
+  "")
+
 (defvar-local magit-boost--git-dir nil
   "Buffer-local variable to cache the Git tree object for the current
 repository.")
@@ -331,21 +338,6 @@ CONNECTION-TYPE."
 	     (progress-reporter-done magit-boost--progress)))
       ret)))
 
-(defcustom magit-boost-entry-points '(magit-status
-				      magit-refresh
-				      magit-checkout
-				      magit-rebase
-				      magit-rebase-interactive)
-  "")
-
-(dolist (entry '(magit-boost--revparse))
-  (advice-add entry :around #'magit-boost--git-cmd-wrapper))
-
-(advice-add 'magit-process-git :around #'magit-boost--git-cmd-wrapper)
-
-(dolist (entry magit-boost-entry-points)
-  (advice-add entry :around #'magit-boost--entry-wrapper))
-
 (defun magit-boost--show-toplevel (dir)
   (when-let* ((buffer (magit-boost-buffer dir 'pty))
 	      (root (with-current-buffer buffer
@@ -441,7 +433,13 @@ Note: This mode may not be compatible with remote (TRAMP) buffers."
 	(advice-add 'magit-boost--process-git
 		    :around #'magit-boost--revparse)
 	(advice-add 'tramp-get-file-property
-		    :around #'magit-boost-get-file-property))
+		    :around #'magit-boost-get-file-property)
+	(advice-add #'magit-boost--revparse
+		    :around #'magit-boost--git-cmd-wrapper)
+	(advice-add 'magit-process-git
+		    :around #'magit-boost--git-cmd-wrapper)
+	(dolist (entry magit-boost-entry-points)
+	  (advice-add entry :around #'magit-boost--entry-wrapper)))
     (advice-remove 'magit-process-git #'magit-boost-process-git)
     (advice-remove 'magit-run-git-with-input #'magit-boost-run-git-with-input)
     (advice-remove 'vc-responsible-backend #'magit-boost--vc-responsible-backend)
@@ -450,6 +448,12 @@ Note: This mode may not be compatible with remote (TRAMP) buffers."
     (advice-remove 'magit-boost--process-git
 		   #'magit-boost--revparse)
     (advice-remove 'tramp-get-file-property
-		   #'magit-boost-get-file-property)))
+		   #'magit-boost-get-file-property)
+    (advice-remove #'magit-boost--revparse
+		   #'magit-boost--git-cmd-wrapper)
+    (advice-remove #'magit-process-git
+		   #'magit-boost--git-cmd-wrapper)
+    (dolist (entry magit-boost-entry-points)
+      (advice-remove entry #'magit-boost--entry-wrapper))))
 
 (provide 'magit-boost)
