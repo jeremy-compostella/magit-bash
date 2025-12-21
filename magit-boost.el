@@ -294,8 +294,7 @@ multiple synchronous remote calls with a single batch execution."
 	      (forward-line)
 	      (tramp-set-file-property
 	       v localname "file-truename"
-	       (buffer-substring-no-properties (line-beginning-position)
-					       (line-end-position)))))
+	       (buffer-substring (line-beginning-position) (line-end-position)))))
 	  (forward-line))))))
 
 (defun magit-boost-get-file-property (orig-fun &rest args)
