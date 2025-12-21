@@ -274,16 +274,12 @@ CONNECTION-TYPE."
 				  (line-beginning-position) (line-end-position)))))
 	  (dolist (tp test-and-props)
 	    (let ((localname (tramp-file-name-localname (tramp-dissect-file-name file))))
-	      ;; (message "%s %s %s" localname (cdr tp) (if (member (cdr tp) res) t nil))
 	      (with-parsed-tramp-file-name file nil
 		(tramp-set-file-property
 		 v localname (cdr tp) (if (member (cdr tp) res) t nil)))))
 	  (with-parsed-tramp-file-name file nil
 	    (when (member "file-exists-p" res)
 	      (forward-line)
-	      ;; (message "truename: %s" (buffer-substring-no-properties
-	      ;; 			       (line-beginning-position)
-	      ;; 			       (line-end-position)))
 	      (tramp-set-file-property
 	       v localname "file-truename"
 	       (buffer-substring-no-properties (line-beginning-position)
