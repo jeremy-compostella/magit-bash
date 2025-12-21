@@ -267,13 +267,18 @@ multiple synchronous remote calls with a single batch execution."
 				     (car tp) (cdr tp)))
 			   test-and-props " ; "))
 	 (truename "[ -e \"$file\" ] && echo '' && readlink -nf \"$file\"")
+	 (attributes (format "[ -e \"$file\" ] && echo '' && %s"
+			     (with-parsed-tramp-file-name default-directory nil
+			       (replace-regexp-in-string
+				"\$1" "$file"
+				(tramp-expand-script v tramp-stat-file-attributes)))))
 	 (cmd (concat "for file in "
 		      (mapconcat (lambda (file)
 				   (format "'%s' "
 					   (tramp-file-name-localname
 					    (tramp-dissect-file-name file))))
 				 files " ")
-		      "; do " tests " ; " truename
+		      "; do " tests " ; " truename " ; " attributes
 		      "; echo ''"
 		      "; done")))
     (with-temp-buffer
@@ -294,7 +299,15 @@ multiple synchronous remote calls with a single batch execution."
 	      (forward-line)
 	      (tramp-set-file-property
 	       v localname "file-truename"
-	       (buffer-substring (line-beginning-position) (line-end-position)))))
+	       (buffer-substring (line-beginning-position) (line-end-position)))
+	      (forward-line)
+	      (cl-letf (((symbol-function 'tramp-get-file-property)
+			 (lambda (key file property &optional default)
+			   default)))
+		(tramp-convert-file-attributes v localname 'integer
+		  (read (buffer-substring (line-beginning-position)
+					  (line-end-position)))))
+	      (forward-line)))
 	  (forward-line))))))
 
 (defun magit-boost-get-file-property (orig-fun &rest args)
