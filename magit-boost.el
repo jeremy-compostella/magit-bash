@@ -248,6 +248,15 @@ CONNECTION-TYPE."
 	(magit-boost-process-cmd (concat "git " cmd) input destination))))))
 
 (defun magit-boost-load-files-attributes (files)
+  "Batch load and cache Tramp file attributes for FILES.
+
+This function constructs a single shell command to retrieve file
+existence, readability, writability, directory status, symlink status,
+and truenames for all provided FILES.  The results are parsed and
+injected directly into the Tramp property cache.
+
+This significantly improves performance on slow networks by replacing
+multiple synchronous remote calls with a single batch execution."
   (let* ((test-and-props '(("-e" . "file-exists-p")
 			   ("-r" . "file-readable-p")
 			   ("-w" . "file-writable-p")
