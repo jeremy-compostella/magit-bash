@@ -249,7 +249,7 @@ CONNECTION-TYPE."
 			      " ")))
 	(magit-boost-process-cmd (concat "git " cmd) input destination))))))
 
-(defun magit-boost-load-files-attributes ()
+(defun magit-boost-load-files-attributes (files)
   (let* ((test-and-props '(("-e" . "file-exists-p")
 			   ("-r" . "file-readable-p")
 			   ("-w" . "file-writable-p")
@@ -265,7 +265,7 @@ CONNECTION-TYPE."
 				   (format "'%s' "
 					   (tramp-file-name-localname
 					    (tramp-dissect-file-name file))))
-				 magit-boost-git-tree-files " ")
+				 files " ")
 		      "; do " tests " ; " truename
 		      "; echo ''"
 		      "; done")))
@@ -274,7 +274,7 @@ CONNECTION-TYPE."
 	(unless (= ret 0)
 	  (error "Failed to read files attributes")))
       (goto-char (point-min))
-      (dolist (file magit-boost-git-tree-files)
+      (dolist (file files)
 	(let ((res (split-string (buffer-substring
 				  (line-beginning-position) (line-end-position)))))
 	  (dolist (tp test-and-props)
@@ -302,7 +302,7 @@ CONNECTION-TYPE."
 	  (add-to-list 'magit-boost-git-tree-files filename)
 	  (let ((value (funcall orig-fun key localname property tramp-cache-undefined)))
 	    (when (eq value tramp-cache-undefined)
-	      (magit-boost-load-files-attributes))))))
+	      (magit-boost-load-files-attributes magit-boost-git-tree-files))))))
     (apply orig-fun args)))
 
 (defun magit-boost--git-cmd-wrapper (orig-fun &rest args)
