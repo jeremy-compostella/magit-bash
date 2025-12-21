@@ -25,10 +25,10 @@
 ;;; Commentary:
 ;;
 ;; Magit Boost enhances the speed of Git command execution by leveraging a
-;; persistent bash process.  This package initializes and manages dedicated Boost
-;; buffers, intercepts Git commands from Magit, and executes them using the
-;; running bash process.  In my experience, this results in a 2-4x performance
-;; boost for commands like `magit-status' and `magit-log'.
+;; persistent bash process.  This package initializes and manages dedicated
+;; Boost buffers, intercepts Git commands from Magit, and executes them using
+;; the running bash process.  In my experience, this results in a 2-4x
+;; performance boost for commands like `magit-status' and `magit-log'.
 
 (require 'cl-seq)
 (require 'magit)
@@ -57,11 +57,11 @@ Could be 'progress or 'performance."
 				      magit-log-current)
   "")
 
-(defvar-local magit-boost--git-dir nil
+(defvar-local magit-boost-git-dir nil
   "Buffer-local variable to cache the Git tree object for the current
 repository.")
 
-(defvar-local magit-boost--git-dir-truename nil
+(defvar-local magit-boost-git-dir-truename nil
   "Buffer-local variable to cache the Git tree object for the current
 repository.")
 
@@ -105,7 +105,7 @@ This variable is automatically set when creating a new Magit Boost buffer via
 `magit-boost-new-buffer', and is used to ensure the correct process connection
 type is chosen for each Git command execution.")
 
-(defun magit-boost--git-dir (dir)
+(defun magit-boost-git-dir (dir)
   (with-temp-buffer
     (setq default-directory dir)
     (if (= (process-file "git" nil t nil "rev-parse" "--git-dir") 0)
@@ -125,18 +125,18 @@ CONNECTION-TYPE."
 	   (buffer (generate-new-buffer buf-name)))
       (uniquify-rationalize-file-buffer-names buf-name default-directory buffer)
       (with-current-buffer buffer
-	(let ((git-dir (magit-boost--git-dir default-directory)))
+	(let ((git-dir (magit-boost-git-dir default-directory)))
 	  (setq default-directory (concat dir "/")
-		magit-boost--git-dir git-dir
-		magit-boost--git-dir-truename (file-truename git-dir)
+		magit-boost-git-dir git-dir
+		magit-boost-git-dir-truename (file-truename git-dir)
 		magit-boost-connection-type connection-type)))
       buffer)
     (error "No git repository found")))
 
 (defun magit-boost-in-git-dir (filename)
-  (let ((git-dir (concat default-directory magit-boost--git-dir)))
+  (let ((git-dir (concat default-directory magit-boost-git-dir)))
     (or (string-prefix-p git-dir filename)
-	(string-prefix-p magit-boost--git-dir-truename filename))))
+	(string-prefix-p magit-boost-git-dir-truename filename))))
 
 (defun magit-boost-buffer (filename connection-type)
   (cl-flet ((is-buffer-for (connection-type filename buffer)
@@ -175,11 +175,11 @@ CONNECTION-TYPE."
 
 (defun magit-boost--stderr (file)
   (if file
-      (format "; if [ -e '%s' ]; then cat '%s'; fi" file file)
+      (format "echo -n __MAGIT_BOOST_STDERR__ ; if [ -e '/tmp/magit-boost-stderr' ]; then cat '/tmp/magit-boost-stderr'; fi; " file file)
     ""))
 
 (defun magit-boost-process-cmd (cmd input destination)
-  "Execute PROGRAM with ARGS via the Magit Bash process."
+  "Execute a shell command CMD."
   (let* ((connection-type (if (and input
 				   (goto-char (point-min))
 				   (search-forward "\r" nil t))
@@ -189,17 +189,18 @@ CONNECTION-TYPE."
 	 res found ret)
     (with-magit-boost-buffer-create default-directory connection-type
       (let* ((process (get-buffer-process (current-buffer)))
-	     start stderr
-	     (loop 0))
+	     start stderr)
 	(when input
-	  (setf input (replace-regexp-in-string "'" "'\"'\"'" input)
-		cmd (format "echo '%s' | %s" input cmd)))
-	(when (and (listp destination)
-		   (stringp (cadr destination)))
+	  (setf cmd (concat "echo '"
+			    (replace-regexp-in-string "'" "'\"'\"'" input) "' | "
+			    cmd)))
+	(when (and (listp destination) (stringp (cadr destination)))
 	  (setf stderr (cadr destination)
-		cmd (format "%s 2>'%s'" cmd stderr)))
-	(setf cmd (format "%s ; echo __MAGIT_BASH_DONE_$?__ %s"
+		cmd (format "%s 2>'%s'" cmd "/tmp/magit-boost-stderr")))
+	(setf cmd (concat cmd " ; export RES=$?"))
+	(setf cmd (format "%s ; %s echo __MAGIT_BOOST_DONE_$RES"
 			  cmd (magit-boost--stderr stderr)))
+	;; TODO: Skip if we already are in the right directory
 	(setf cmd (concat "cd " current-dir "; " cmd "; cd - > /dev/null\n"))
 	(save-excursion
 	  (goto-char (point-max))
@@ -210,17 +211,19 @@ CONNECTION-TYPE."
 	  (accept-process-output process 1 nil t)
 	  (save-excursion
 	    (goto-char start)
-	    (when (re-search-forward "__MAGIT_BASH_DONE_\\([0-9]+\\)__" nil t)
+	    (when (re-search-forward "__MAGIT_BOOST_DONE_\\([0-9]+\\)" nil t)
 	      (setf found t
 		    res (buffer-substring-no-properties start
 							(match-beginning 0))
 		    ret (string-to-number (match-string 1)))
 	      (when stderr
-		(let ((err (buffer-substring-no-properties (match-end 0) (point-max))))
-		  (unless (string= err "\n")
-		    (with-temp-buffer
- 		      (insert err)
-		      (write-region (point-min) (point-max) stderr)))))))))
+		(let ((split (split-string res "__MAGIT_BOOST_STDERR__")))
+		  (setf res (car split))
+		  (when-let ((err (cadr split)))
+		    (unless (string= err "")
+		      (with-temp-buffer
+			(insert err)
+			(write-region (point-min) (point-max) stderr))))))))))
       (unless magit-boost-debug
 	(erase-buffer)))
     (when (and (= ret 0) destination)
@@ -232,7 +235,8 @@ CONNECTION-TYPE."
   (let ((git-args (flatten-list args))
 	fun)
     (if (and (stringp (car git-args))
-	     (setf fun (intern (concat "magit-boost-" (car git-args) (cadr git-args))))
+	     (setf fun (intern (concat "magit-boost-" (car git-args)
+				       (cadr git-args))))
 	     (functionp fun))
 	(funcall fun default-directory)
       (cl-flet* ((escape-quotes (str)
@@ -270,7 +274,7 @@ CONNECTION-TYPE."
 	  (error "Failed to read files attributes")))
       (goto-char (point-min))
       (dolist (file magit-boost-git-tree-files)
-	(let ((res (split-string (buffer-substring-no-properties
+	(let ((res (split-string (buffer-substring
 				  (line-beginning-position) (line-end-position)))))
 	  (dolist (tp test-and-props)
 	    (let ((localname (tramp-file-name-localname (tramp-dissect-file-name file))))
@@ -354,7 +358,7 @@ CONNECTION-TYPE."
 
 (defun magit-boost-rev-parse--git-dir (dir)
   (insert (with-magit-boost-buffer dir 'pty
-	    magit-boost--git-dir))
+	    magit-boost-git-dir))
   0)
 
 (defun magit-boost-process-git (orig-fun &rest args)
