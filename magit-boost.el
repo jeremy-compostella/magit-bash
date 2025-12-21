@@ -235,20 +235,14 @@ CONNECTION-TYPE."
 	     (setf fun (intern (concat "magit-boost-" (car git-args) (cadr git-args))))
 	     (functionp fun))
 	(funcall fun default-directory)
-      (cl-flet ((escape-double-quote (str)
-		  (with-temp-buffer
-		    (insert str)
-		    (goto-char (point-min))
-		    (while (search-forward "\"" nil t)
-		      (save-excursion
-			(goto-char (match-beginning 0))
-			(insert "\\")))
-		    (buffer-string))))
-	(let ((cmd (concat "git " (mapconcat (apply-partially #'format "\"%s\"")
-					     (mapcar #'escape-double-quote
-						     (magit-process-git-arguments args))
-					     " "))))
-	  (magit-boost-process-cmd cmd input destination))))))
+      (cl-flet* ((escape-quotes (str)
+		   (replace-regexp-in-string "\"" "\\\\\"" str))
+		 (format-arg (arg)
+		   (format "\"%s\"" (escape-quotes arg))))
+	(let ((cmd (mapconcat #'format-arg
+			      (magit-process-git-arguments args)
+			      " ")))
+	(magit-boost-process-cmd (concat "git " cmd) input destination))))))
 
 (defun magit-boost-load-files-attributes ()
   (let* ((test-and-props '(("-e" . "file-exists-p")
