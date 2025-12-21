@@ -19,7 +19,7 @@ Enable =magit-boost-mode= globally to accelerate Magit operations:
 (magit-boost-mode 1)
 #+end_src
 
-When enabled, Magit Boost intercepts Magit Git commands and routes them through a persistent Boost process. Caching is enabled by default for certain commands (cf.  =magit-boost-cache-commands=).
+When enabled, Magit Boost intercepts Magit Git commands and routes them through a persistent Bash process.
 
-Note: It falls back to standard Magit behavior for non-remote (TRAMP) buffers.
+*Note*: It automatically falls back to standard Magit behavior for non-remote (TRAMP) buffers.
 
