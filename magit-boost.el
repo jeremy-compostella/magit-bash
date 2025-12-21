@@ -134,9 +134,10 @@ CONNECTION-TYPE."
     (error "No git repository found")))
 
 (defun magit-boost-in-git-dir (filename)
-  (let ((git-dir (concat default-directory magit-boost-git-dir)))
-    (or (string-prefix-p git-dir filename)
-	(string-prefix-p magit-boost-git-dir-truename filename))))
+  (when magit-boost-git-dir
+    (let ((git-dir (concat default-directory magit-boost-git-dir)))
+      (or (string-prefix-p git-dir filename)
+	  (string-prefix-p magit-boost-git-dir-truename filename)))))
 
 (defun magit-boost-buffer (filename connection-type)
   (cl-flet ((is-buffer-for (connection-type filename buffer)
