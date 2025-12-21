@@ -174,61 +174,59 @@ CONNECTION-TYPE."
   `(with-current-buffer (magit-boost-buffer-create ,directory ,connection-type)
      (progn ,@body)))
 
-(defun magit-boost--stderr (file)
-  (if file
-      (format "echo -n __MAGIT_BOOST_STDERR__ ; if [ -e '/tmp/magit-boost-stderr' ]; then cat '/tmp/magit-boost-stderr'; fi; " file file)
-    ""))
-
 (defun magit-boost-process-cmd (cmd input destination)
   "Execute a shell command CMD."
-  (let* ((connection-type (if (and input
-				   (goto-char (point-min))
-				   (search-forward "\r" nil t))
-			      'nil 'pty))
-	 (current-dir (with-parsed-tramp-file-name default-directory c
-			c-localname))
-	 res found ret)
+  (let ((connection-type (unless (and input (string-search "\r" input))
+			   'pty))
+	(dir (with-parsed-tramp-file-name default-directory c
+	       c-localname))
+	(done-magic "MAGIT_BOOST_DONE")
+	(stderr-magic "MAGIT_BOOST_STDERR")
+	(stderr-local "/tmp/magit-boost-stderr")
+	stdout ret stderr-dest)
     (with-magit-boost-buffer-create default-directory connection-type
-      (let* ((process (get-buffer-process (current-buffer)))
-	     start stderr)
+      (cl-macrolet ((cappend (&rest args)
+		      `(setf cmd (apply #'concat cmd (list ,@args))))
+		    (cprepend (&rest args)
+		      `(setf cmd (apply #'concat ,@args (list cmd)))))
 	(when input
-	  (setf cmd (concat "echo '"
-			    (replace-regexp-in-string "'" "'\"'\"'" input) "' | "
-			    cmd)))
+	  (cprepend "echo '" (replace-regexp-in-string "'" "'\"'\"'" input)
+		    "' | "))
 	(when (and (listp destination) (stringp (cadr destination)))
-	  (setf stderr (cadr destination)
-		cmd (format "%s 2>'%s'" cmd "/tmp/magit-boost-stderr")))
-	(setf cmd (concat cmd " ; export RES=$?"))
-	(setf cmd (format "%s ; %s echo __MAGIT_BOOST_DONE_$RES"
-			  cmd (magit-boost--stderr stderr)))
-	;; TODO: Skip if we already are in the right directory
-	(setf cmd (concat "cd " current-dir "; " cmd "; cd - > /dev/null\n"))
+	  (setf stderr-dest (cadr destination))
+	  (cappend " 2>'" stderr-local "'"))
+	(cappend "; export RET=$?")
+	(when stderr-dest
+	  (cappend "; echo -n " stderr-magic
+		   "; if [ -e '" stderr-local "']"
+		   "; then cat '" stderr-local "'; fi"))
+	(cprepend "cd " dir ";")
+	(cappend "; echo " done-magic " $RET; cd - > /dev/null\n"))
+      (when magit-boost-debug
 	(save-excursion
 	  (goto-char (point-max))
-	  (insert cmd "\n"))
+	  (insert cmd)))
+      (let ((process (get-buffer-process (current-buffer)))
+	    (start (point-max))
+	    (regexp (concat done-magic " \\([0-9]+\\)")))
 	(process-send-string process cmd)
-	(setf start (point-max-marker))
-	(while (not found)
+	(while (not ret)
 	  (accept-process-output process 1 nil t)
 	  (save-excursion
-	    (goto-char start)
-	    (when (re-search-forward "__MAGIT_BOOST_DONE_\\([0-9]+\\)" nil t)
-	      (setf found t
-		    res (buffer-substring-no-properties start
-							(match-beginning 0))
-		    ret (string-to-number (match-string 1)))
-	      (when stderr
-		(let ((split (split-string res "__MAGIT_BOOST_STDERR__")))
-		  (setf res (car split))
-		  (when-let ((err (cadr split)))
-		    (unless (string= err "")
-		      (with-temp-buffer
-			(insert err)
-			(write-region (point-min) (point-max) stderr))))))))))
+	    (goto-char (point-max))
+	    (when (re-search-backward regexp start t)
+	      (setf stdout (buffer-substring start (match-beginning 0))
+		    ret (string-to-number (match-string 1)))))))
+      (when stderr-dest
+	(let ((split (split-string stdout stderr-magic)))
+	  (setf stdout (car split))
+	  (let ((err (cadr split)))
+	    (unless (string-empty-p err)
+	      (write-region err nil stderr-dest)))))
       (unless magit-boost-debug
 	(erase-buffer)))
     (when (and (= ret 0) destination)
-      (insert res))
+      (insert stdout))
     ret))
 
 (defun magit-boost--process-git (destination args &optional input)
