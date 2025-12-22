@@ -24,11 +24,16 @@
 
 ;;; Commentary:
 ;;
-;; Magit Boost enhances the speed of Git command execution by leveraging a
-;; persistent bash process.  This package initializes and manages dedicated
-;; Boost buffers, intercepts Git commands from Magit, and executes them using
-;; the running bash process.  In my experience, this results in a 2-4x
-;; performance boost for commands like `magit-status' and `magit-log'.
+;; Magit Boost is an Emacs package designed to accelerate Magit's performance
+;; when used over high-latency networks, such as corporate VPNs. Magit's default
+;; implementation assumes fast shell command execution and file access, an
+;; assumption that often doesn't hold true in these environments. This module
+;; optimizes Magit by advising specific Git and Tramp functions to introduce
+;; several improvements:
+;; 1. Reducing the number of =git= commands by utilizing cached information or
+;;    performing basic path computations.
+;; 2. Batching commands related to file attributes within the Git tree.
+;; 3. Implementing optimized versions of synchronous =git= command execution.
 
 (require 'cl-seq)
 (require 'magit)
