@@ -64,6 +64,14 @@ repository.")
 
 (defvar-local magit-boost-git-tree-files '())
 
+(defvar-local magit-boost-lock nil
+  "Buffer-local variable acting as a mutex to serialize Magit Boost
+command execution.
+It ensures that only one command is processed at a time,
+preventing re-entrancy issues that can arise when synchronous
+operations are triggered during the processing of asynchronous
+command results.")
+
 (defun magit-boost-filter (process string)
   "Process filter for Magit Boost buffers.
 
@@ -170,6 +178,15 @@ CONNECTION-TYPE."
   `(with-current-buffer (magit-boost-buffer-create ,directory ,connection-type)
      (progn ,@body)))
 
+(defmacro with-magit-boost-lock (&rest body)
+  "Execute BODY with the buffer-local lock."
+  (declare (indent 0))
+  `(unless magit-boost-lock
+     (setf magit-boost-lock t)
+     (unwind-protect
+	 (progn ,@body)
+       (setf magit-boost-lock nil))))
+
 (defun magit-boost-process-cmd (cmd input destination)
   "Execute a shell command CMD."
   (let ((connection-type (unless (and input (string-search "\r" input))
@@ -181,47 +198,48 @@ CONNECTION-TYPE."
 	(stderr-local "/tmp/magit-boost-stderr")
 	stdout ret stderr-dest)
     (with-magit-boost-buffer-create default-directory connection-type
-      (cl-macrolet ((cappend (&rest args)
-		      `(setf cmd (apply #'concat cmd (list ,@args))))
-		    (cprepend (&rest args)
-		      `(setf cmd (apply #'concat ,@args (list cmd)))))
-	(when input
-	  (cprepend "echo '" (replace-regexp-in-string "'" "'\"'\"'" input)
-		    "' | "))
-	(when (and (listp destination) (stringp (cadr destination)))
-	  (setf stderr-dest (cadr destination))
-	  (cappend " 2>'" stderr-local "'"))
-	(cappend "; export RET=$?")
-	(when stderr-dest
-	  (cappend "; echo -n " stderr-magic
-		   "; if [ -e '" stderr-local "' ]"
-		   "; then cat '" stderr-local "'; fi"))
-	(cprepend "cd " dir ";")
-	(cappend "; echo " done-magic " $RET; cd - > /dev/null\n"))
-      (when magit-boost-debug
-	(save-excursion
-	  (goto-char (point-max))
-	  (insert cmd)))
-      (let ((process (get-buffer-process (current-buffer)))
-	    (start (point-max))
-	    (regexp (concat done-magic " \\([0-9]+\\)")))
-	(process-send-string process cmd)
-	(while (not ret)
-	  (accept-process-output process 1 nil t)
+      (with-magit-boost-lock
+	(cl-macrolet ((cappend (&rest args)
+			`(setf cmd (apply #'concat cmd (list ,@args))))
+		      (cprepend (&rest args)
+			`(setf cmd (apply #'concat ,@args (list cmd)))))
+	  (when input
+	    (cprepend "echo '" (replace-regexp-in-string "'" "'\"'\"'" input)
+		      "' | "))
+	  (when (and (listp destination) (stringp (cadr destination)))
+	    (setf stderr-dest (cadr destination))
+	    (cappend " 2>'" stderr-local "'"))
+	  (cappend "; export RET=$?")
+	  (when stderr-dest
+	    (cappend "; echo -n " stderr-magic
+		     "; if [ -e '" stderr-local "' ]"
+		     "; then cat '" stderr-local "'; fi"))
+	  (cprepend "cd " dir ";")
+	  (cappend "; echo " done-magic " $RET; cd - > /dev/null\n"))
+	(when magit-boost-debug
 	  (save-excursion
 	    (goto-char (point-max))
-	    (when (re-search-backward regexp start t)
-	      (setf stdout (buffer-substring start (match-beginning 0))
-		    ret (string-to-number (match-string 1)))))))
-      (when stderr-dest
-	(let ((split (split-string stdout stderr-magic)))
-	  (setf stdout (car split))
-	  (let ((err (cadr split)))
-	    (unless (string-empty-p err)
-	      (write-region err nil stderr-dest)))))
-      (unless magit-boost-debug
-	(erase-buffer)))
-    (when (and (= ret 0) destination)
+	    (insert cmd)))
+	(let ((process (get-buffer-process (current-buffer)))
+	      (start (point-max))
+	      (regexp (concat done-magic " \\([0-9]+\\)")))
+	  (process-send-string process cmd)
+	  (while (not ret)
+	    (accept-process-output process 1 nil t)
+	    (save-excursion
+	      (goto-char (point-max))
+	      (when (re-search-backward regexp start t)
+		(setf stdout (buffer-substring start (match-beginning 0))
+		      ret (string-to-number (match-string 1)))))))
+	(when stderr-dest
+	  (let ((split (split-string stdout stderr-magic)))
+	    (setf stdout (car split))
+	    (let ((err (cadr split)))
+	      (unless (string-empty-p err)
+		(write-region err nil stderr-dest)))))
+	(unless magit-boost-debug
+	  (erase-buffer))))
+    (when (and (numberp ret) (= ret 0) destination)
       (insert stdout))
     ret))
 
@@ -359,8 +377,9 @@ a persistent Bash process.
 If the current buffer's `default-directory' is a TRAMP (remote), execute
 the Git command using Magit Boost's accelerated Bash process, passing
 DESTINATION (the first element of ARGS) and the prepared Git arguments."
-  (if (tramp-tramp-file-p default-directory)
-      (magit-boost--process-git (car args) (cdr args))
+  (if-let ((ret (and (tramp-tramp-file-p default-directory)
+		     (magit-boost--process-git (car args) (cdr args)))))
+      ret
     (apply orig-fun args)))
 
 (defun magit-boost-run-git-with-input (orig-fun &rest args)
@@ -374,8 +393,9 @@ Otherwise, execute the Git command using the Magit Bash process, piping
 the current buffer's contents as input to the command. This reduces
 process startup overhead and improves performance for repeated Git
 operations."
-  (if (tramp-tramp-file-p default-directory)
-      (magit-boost--process-git t args (buffer-string))
+  (if-let ((ret (and (tramp-tramp-file-p default-directory)
+		     (magit-boost--process-git t args (buffer-string)))))
+      ret
     (apply orig-fun args)))
 
 (defun magit-boost-vc-responsible-backend (orig-fun &rest args)
