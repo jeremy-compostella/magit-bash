@@ -423,14 +423,14 @@ persistent Bash process."
 		    :around #'magit-boost-vc-responsible-backend)
 	(advice-add 'tramp-get-file-property
 		    :around #'magit-boost-get-file-property)
-	(advice-add 'tramp-sh-handle-file-writable-p :around
-		    #'magit-boost-tramp-sh-handle-file-writable-p))
+	(advice-add 'tramp-sh-handle-file-writable-p
+		    :around #'magit-boost-tramp-sh-handle-file-writable-p))
     (advice-remove 'magit-process-git #'magit-boost-process-git)
     (advice-remove 'magit-run-git-with-input #'magit-boost-run-git-with-input)
     (advice-remove 'vc-responsible-backend #'magit-boost-vc-responsible-backend)
     (advice-remove 'tramp-get-file-property #'magit-boost-get-file-property)
-    (advice-add 'tramp-sh-handle-file-writable-p :around
-		#'magit-boost-tramp-sh-handle-file-writable-p)))
+    (advice-remove 'insert-file-contents
+		   #'magit-boost-insert-file-contents)))
 
 (defcustom magit-boost-progress-entry-points
   '(magit-status magit-refresh magit-checkout magit-rebase
