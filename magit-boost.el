@@ -320,6 +320,14 @@ multiple synchronous remote calls with a single batch execution."
 	      (magit-boost-load-files-attributes magit-boost-git-tree-files))))))
     (apply orig-fun args)))
 
+(defun magit-boost-tramp-sh-handle-file-writable-p (orig-fun &rest args)
+  "Advice for `tramp-sh-handle-file-writable-p' to batch load file"
+  (let* ((filename (car args)))
+    (if (and (magit-boost-buffer filename 'pty) (magit-boost-in-git-dir filename))
+	(with-parsed-tramp-file-name filename nil
+	  (tramp-get-file-property v localname "file-writable-p"))
+      (apply orig-fun args))))
+
 (defun magit-boost-rev-parse--show-cdup (dir)
   (when-let ((cdup (with-magit-boost-buffer dir 'pty
 		     (if (magit-boost-in-git-dir dir)
@@ -394,11 +402,15 @@ persistent Bash process."
 	(advice-add 'vc-responsible-backend
 		    :around #'magit-boost-vc-responsible-backend)
 	(advice-add 'tramp-get-file-property
-		    :around #'magit-boost-get-file-property))
+		    :around #'magit-boost-get-file-property)
+	(advice-add 'tramp-sh-handle-file-writable-p :around
+		    #'magit-boost-tramp-sh-handle-file-writable-p))
     (advice-remove 'magit-process-git #'magit-boost-process-git)
     (advice-remove 'magit-run-git-with-input #'magit-boost-run-git-with-input)
     (advice-remove 'vc-responsible-backend #'magit-boost-vc-responsible-backend)
-    (advice-remove 'tramp-get-file-property #'magit-boost-get-file-property)))
+    (advice-remove 'tramp-get-file-property #'magit-boost-get-file-property)
+    (advice-add 'tramp-sh-handle-file-writable-p :around
+		#'magit-boost-tramp-sh-handle-file-writable-p)))
 
 (defcustom magit-boost-progress-entry-points
   '(magit-status magit-refresh magit-checkout magit-rebase
