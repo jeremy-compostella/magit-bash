@@ -35,6 +35,8 @@
 ;; 2. Batching commands related to file attributes within the Git tree.
 ;; 3. Implementing optimized versions of synchronous =git= command execution.
 
+(require 'cl-extra)
+(require 'cl-macs)
 (require 'cl-seq)
 (require 'magit)
 (require 'tramp)
