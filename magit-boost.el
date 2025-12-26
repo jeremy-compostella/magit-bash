@@ -289,13 +289,15 @@ multiple synchronous remote calls with a single batch execution."
 			       (replace-regexp-in-string
 				"\$1" "$file"
 				(tramp-expand-script v tramp-stat-file-attributes)))))
+	 (content (concat "[ -f \"$file\" ] && [ -r \"$file\" ] && echo '' && "
+			  "cat \"$file\" && echo -n MAGIT_BOOST_EOF"))
 	 (cmd (concat "for file in "
 		      (mapconcat (lambda (file)
 				   (format "'%s' "
 					   (tramp-file-name-localname
 					    (tramp-dissect-file-name file))))
 				 files " ")
-		      "; do " tests " ; " truename " ; " attributes
+		      "; do " tests " ; " truename " ; " attributes " ; " content
 		      "; echo ''"
 		      "; done")))
     (with-temp-buffer
@@ -324,7 +326,15 @@ multiple synchronous remote calls with a single batch execution."
 		(tramp-convert-file-attributes v localname 'integer
 		  (read (buffer-substring (line-beginning-position)
 					  (line-end-position)))))
-	      (forward-line)))
+	      (forward-line))
+	    (when (and (member "file-regular-p" res)
+		       (member "file-readable-p" res))
+	      (forward-line)
+	      (let ((start (point)))
+		(when (search-forward "MAGIT_BOOST_EOF" nil t)
+		  (with-parsed-tramp-file-name file f
+		    (tramp-set-file-property
+		     v f-localname "file-content" (buffer-substring start (match-beginning 0))))))))
 	  (forward-line))))))
 
 (defun magit-boost-get-file-property (orig-fun &rest args)
@@ -377,16 +387,16 @@ multiple synchronous remote calls with a single batch execution."
   (let* ((filename (expand-file-name (car args)))
 	 (visit (cadr args))
 	 (buffer (current-buffer))
-	 (ret (when (cl-every #'null (cddr args))
-		(with-magit-boost-buffer filename 'pty
-		  (when (magit-boost-in-git-dir filename)
-		    (with-parsed-tramp-file-name filename r
-		      (let ((cmd (concat "cat " r-localname)))
-			(with-current-buffer buffer
+	 (content (when (cl-every #'null (cddr args))
+		    (with-magit-boost-buffer filename 'pty
+		      (when (magit-boost-in-git-dir filename)
+			(with-parsed-tramp-file-name filename nil
 			  (save-excursion
-			    (magit-boost-process-cmd cmd nil t))))))))))
-    (if (and (numberp ret) (= ret 0))
+			    (tramp-get-file-property v localname "file-content"))))))))
+    (if content
 	(progn
+	  (save-excursion
+	    (insert content))
 	  (when visit
 	    (setq buffer-file-name filename
 		  buffer-read-only (not (file-writable-p filename)))
