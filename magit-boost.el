@@ -337,7 +337,8 @@ multiple synchronous remote calls with a single batch execution."
 		(when (search-forward "MAGIT_BOOST_EOF" nil t)
 		  (with-parsed-tramp-file-name file f
 		    (tramp-set-file-property
-		     v f-localname "file-content" (buffer-substring start (match-beginning 0))))))))
+		     v f-localname "file-content"
+		     (buffer-substring start (match-beginning 0))))))))
 	  (forward-line))))))
 
 (defun magit-boost-get-file-property (orig-fun &rest args)
@@ -370,7 +371,8 @@ multiple synchronous remote calls with a single batch execution."
 			 (if (string-empty-p sub)
 			     ""
 			   (mapconcat (lambda (_) "..")
-				      (cl-delete "" (split-string sub "/")) "/")))))))
+				      (cl-delete "" (split-string sub "/"))
+				      "/")))))))
     (insert cdup "\n")
     0))
 
