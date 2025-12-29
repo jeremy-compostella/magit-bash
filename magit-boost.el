@@ -40,6 +40,7 @@
 (require 'cl-seq)
 (require 'magit)
 (require 'tramp)
+(require 'with-editor)
 
 (defcustom magit-boost-buffer-name "*magit-boost*"
   "Name of the magit bash buffer."
@@ -239,20 +240,29 @@ CONNECTION-TYPE."
     (process-send-string (get-buffer-process (current-buffer)) cmd)))
 
 (defun magit-boost-filter (process string)
-  (with-current-buffer (process-buffer process)
-    (goto-char (point-max))
-    (insert string)
-    (when (re-search-backward "\\([0-9]+\\) MAGIT_BOOST_DONE"
-			      (car magit-boost-cmd-stdout) t)
-      (setq magit-boost-cmd-ret (string-to-number (match-string 1)))
-      (let ((end (match-beginning 0)))
-	(if (re-search-backward "MAGIT_BOOST_STDERR"
+  (let ((former-buffer (process-get process 'magit-boost-buffer)))
+    (with-current-buffer (or former-buffer (process-buffer process))
+      (goto-char (point-max))
+      (insert string)
+      (when (re-search-backward "\\([0-9]+\\) MAGIT_BOOST_DONE"
 				(car magit-boost-cmd-stdout) t)
-	    (progn
-	      (setcdr magit-boost-cmd-stdout (list (match-beginning 0)))
-	      (setq magit-boost-cmd-stderr (list (match-end 0) end)))
-	  (setcdr magit-boost-cmd-stdout (list end))))
-      (setq magit-boost-cmd-state 'complete))))
+	(setq magit-boost-cmd-ret (string-to-number (match-string 1)))
+	(let ((end (match-beginning 0)))
+	  (if (re-search-backward "MAGIT_BOOST_STDERR"
+				  (car magit-boost-cmd-stdout) t)
+	      (progn
+		(setcdr magit-boost-cmd-stdout (list (match-beginning 0)))
+		(setq magit-boost-cmd-stderr (list (match-end 0) end)))
+	    (setcdr magit-boost-cmd-stdout (list end))))
+	(setq magit-boost-cmd-state 'complete))
+      (when (and (eq magit-boost-cmd-state 'complete) former-buffer)
+	(magit-refresh)
+	;; The asynchronous git command completed, we can reclaim the process
+	;; back.
+	(set-process-buffer process former-buffer)
+	(set-process-filter process #'magit-boost-filter)
+	(process-put process 'magit-boost-buffer nil)
+	(setq magit-boost-cmd-state 'free)))))
 
 (defun magit-boost-process-cmd (cmd input destination)
   "Execute a shell command CMD."
@@ -477,34 +487,54 @@ This avoids invoking the slower default implementation of
       "Git"
     (apply orig-fun args)))
 
+(defun magit-boost-start-file-process (orig-fun name buffer program &rest args)
+  (if (string= program "git")
+      (with-magit-boost-buffer default-directory 'pty
+	(when (file-remote-p default-directory)
+	  (unless (equal program "env")
+	    (push program args)
+	    (setq program "env"))
+	  (cl-flet* ((escape-quotes (str)
+		       (replace-regexp-in-string "'" "'\"'\"'" str))
+		     (format-arg (arg)
+		       (format "'%s'" (escape-quotes arg))))
+	    (let ((cmd (format "%s=%s %s"  with-editor--envvar
+			       (format-arg with-editor-sleeping-editor)
+			       (mapconcat #'format-arg args " ")))
+		  (process (get-buffer-process (current-buffer))))
+	      (set-process-filter process #'with-editor-process-filter)
+	      (magit-boost-submit-cmd cmd nil nil)
+	      ;; Magit is going to appropriate the buffer, we need to store
+	      ;; the original buffer to reclaim the process later.
+	      (process-put process 'magit-boost-buffer (current-buffer))
+	      (process-put process 'default-dir default-directory)
+	      (accept-process-output process 1 nil t)
+	      process))))
+    (apply orig-fun name buffer program args)))
+
+(defun magit-boost-with-editor-process-filter (orig-fun &rest args)
+  (funcall #'magit-boost-filter (car args) (cadr args))
+  (apply orig-fun args))
+
 (define-minor-mode magit-boost-mode
   "Minor mode to accelerate Magit Git commands by routing them through a
 persistent Bash process."
   :init-value nil
   :global t
   :lighter " MBoost"
+  (let ((advices '((magit-process-git . magit-boost-process-git)
+		   (magit-run-git-with-input . magit-boost-run-git-with-input)
+		   (vc-responsible-backend . magit-boost-vc-responsible-backend)
+		   (tramp-get-file-property . magit-boost-get-file-property)
+		   (tramp-sh-handle-file-writable-p . magit-boost-tramp-sh-handle-file-writable-p)
+		   (insert-file-contents . magit-boost-insert-file-contents)
+		   (with-editor-process-filter . magit-boost-with-editor-process-filter)
+		   (start-file-process . magit-boost-start-file-process))))
   (if magit-boost-mode
-      (progn
-	(advice-add 'magit-process-git
-		    :around #'magit-boost-process-git)
-	(advice-add 'magit-run-git-with-input
-		    :around #'magit-boost-run-git-with-input)
-	(advice-add 'vc-responsible-backend
-		    :around #'magit-boost-vc-responsible-backend)
-	(advice-add 'tramp-get-file-property
-		    :around #'magit-boost-get-file-property)
-	(advice-add 'tramp-sh-handle-file-writable-p
-		    :around #'magit-boost-tramp-sh-handle-file-writable-p)
-	(advice-add 'insert-file-contents
-		    :around #'magit-boost-insert-file-contents))
-    (advice-remove 'magit-process-git #'magit-boost-process-git)
-    (advice-remove 'magit-run-git-with-input #'magit-boost-run-git-with-input)
-    (advice-remove 'vc-responsible-backend #'magit-boost-vc-responsible-backend)
-    (advice-remove 'tramp-get-file-property #'magit-boost-get-file-property)
-    (advice-remove 'tramp-sh-handle-file-writable-p
-		   #'magit-boost-tramp-sh-handle-file-writable-p)
-    (advice-remove 'insert-file-contents
-		   #'magit-boost-insert-file-contents)))
+      (dolist (advice advices)
+	(advice-add (car advice) :around (cdr advice)))
+    (dolist (advice advices)
+      (advice-remove (car advice) (cdr advice))))))
 
 (defcustom magit-boost-progress-entry-points
   '(magit-status magit-refresh magit-checkout magit-rebase
