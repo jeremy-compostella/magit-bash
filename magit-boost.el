@@ -175,7 +175,7 @@ CONNECTION-TYPE."
 	     (process (start-file-process "magit-boost-process" buffer "bash")))
 	(process-send-string process "export PS1=''\n")
 	(accept-process-output process 1 nil t)
-	(set-process-filter process 'magit-boost-filter)))
+	(set-process-filter process #'magit-boost-filter)))
     buffer))
 
 (defmacro with-magit-boost-buffer-create (directory connection-type &rest body)
