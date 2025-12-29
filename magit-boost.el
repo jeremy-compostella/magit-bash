@@ -120,17 +120,20 @@ type is chosen for each Git command execution.")
 (defun magit-boost-new-buffer (dir connection-type)
   "Create and return a new Magit Boost buffer for DIR with
 CONNECTION-TYPE."
-  (setf dir (with-temp-buffer
-	      (setq default-directory dir)
-	      (with-parsed-tramp-file-name (expand-file-name dir) nil
-		(if (= (process-file "git" nil t nil "rev-parse" "--show-toplevel") 0)
-		    (tramp-make-tramp-file-name v (string-trim (buffer-string)))))))
+  (when-let ((index (string-match "\.git/" dir)))
+    (setf dir (substring dir 0 index)))
+  (setf dir
+	(with-temp-buffer
+	  (setq default-directory dir)
+	  (with-parsed-tramp-file-name (expand-file-name dir) nil
+	    (if (= (process-file "git" nil t nil "rev-parse" "--show-toplevel") 0)
+		(tramp-make-tramp-file-name v (string-trim (buffer-string)))))))
   (if dir
     (let* ((buf-name (format magit-boost-buffer-name))
 	   (buffer (generate-new-buffer buf-name)))
-      (uniquify-rationalize-file-buffer-names buf-name default-directory buffer)
+      (uniquify-rationalize-file-buffer-names buf-name dir buffer)
       (with-current-buffer buffer
-	(let ((git-dir (magit-boost-git-dir default-directory)))
+	(let ((git-dir (magit-boost-git-dir dir)))
 	  (setq default-directory (concat dir "/")
 		magit-boost-git-dir git-dir
 		magit-boost-git-tree-files (list (concat default-directory git-dir))
