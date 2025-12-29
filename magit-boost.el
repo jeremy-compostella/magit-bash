@@ -66,23 +66,43 @@ repository.")
 
 (defvar-local magit-boost-git-tree-files '())
 
-(defvar-local magit-boost-lock nil
-  "Buffer-local variable acting as a mutex to serialize Magit Boost
-command execution.
-It ensures that only one command is processed at a time,
-preventing re-entrancy issues that can arise when synchronous
-operations are triggered during the processing of asynchronous
-command results.")
+(defvar-local magit-boost-cmd-state nil
+  "Variable tracking the state of the current command.
+This variable ensures proper serialization and state management
+for asynchronous command execution within a Magit Boost buffer.
 
-(defun magit-boost-filter (process string)
-  "Process filter for Magit Boost buffers.
+Possible values are:
+- `free': No command is currently running, and the buffer is ready
+   to accept a new command.
+- `running': A command has been submitted to the Bash process and
+   is currently being executed.
+- `complete': A command has finished execution, and its output has
+   been processed. The buffer is awaiting cleanup or further action
+   before returning to the `'free` state.")
 
-Append STRING, the output from PROCESS, to the end of the buffer
-associated with PROCESS. This function is used to collect and display
-output from the Bash process in the Magit Boost buffer."
-  (with-current-buffer (process-buffer process)
-    (goto-char (point-max))
-    (insert string)))
+(defvar-local magit-boost-cmd-stdout '()
+  "Variable storing the boundaries of the standard output.
+
+This list contains two buffer positions: the start and end of the
+stdout section from the last command executed in this Magit Boost
+buffer.")
+
+(defvar-local magit-boost-cmd-stderr '()
+  "Variable storing the boundaries of the standard error output.
+
+This list contains two buffer positions: the start and end of the
+stderr section from the last command executed in this Magit Boost
+buffer.")
+
+(defvar-local magit-boost-cmd-ret -1
+  "Variable storing the exit code of the last command executed.")
+
+(defun magit-boost-cmd-init ()
+  "Initialize the buffer-local command state variables."
+  (setq magit-boost-cmd-state 'free
+	magit-boost-cmd-stdout '()
+	magit-boost-cmd-stderr '()
+	magit-boost-cmd-ret -1))
 
 (defun magit-boost-buffers ()
   "Return a list of all Magit Boost buffers."
@@ -138,7 +158,8 @@ CONNECTION-TYPE."
 		magit-boost-git-dir git-dir
 		magit-boost-git-tree-files (list (concat default-directory git-dir))
 		magit-boost-git-dir-truename (file-truename git-dir)
-		magit-boost-connection-type connection-type)))
+		magit-boost-connection-type connection-type))
+	(magit-boost-cmd-init))
       buffer)
     (error "No git repository found")))
 
@@ -151,7 +172,8 @@ CONNECTION-TYPE."
 (defun magit-boost-buffer (filename connection-type)
   (cl-flet ((is-buffer-for (connection-type filename buffer)
 	      (with-current-buffer buffer
-		(and (eq magit-boost-connection-type connection-type)
+		(and (eq magit-boost-cmd-state 'free)
+		     (eq magit-boost-connection-type connection-type)
 		     (or (string-prefix-p default-directory filename)
 			 (magit-boost-in-git-dir filename))))))
     (cl-find filename (magit-boost-buffers)
@@ -183,67 +205,75 @@ CONNECTION-TYPE."
   `(with-current-buffer (magit-boost-buffer-create ,directory ,connection-type)
      (progn ,@body)))
 
-(defmacro with-magit-boost-lock (&rest body)
-  "Execute BODY with the buffer-local lock."
-  (declare (indent 0))
-  `(unless magit-boost-lock
-     (setf magit-boost-lock t)
-     (unwind-protect
-	 (progn ,@body)
-       (setf magit-boost-lock nil))))
+(defun magit-boost-submit-cmd (cmd input destination)
+  (unless (eq magit-boost-cmd-state 'free)
+    (error "Buffer is in unexpected %s state" magit-boost-cmd-state))
+  (unless magit-boost-debug
+    (erase-buffer))
+  (setq magit-boost-cmd-state 'running)
+  (let ((stderr-local "/tmp/magit-boost-stderr")
+	(stderr-magic "MAGIT_BOOST_STDERR")
+	(done-magic "MAGIT_BOOST_DONE")
+	(dir (with-parsed-tramp-file-name default-directory c
+	       c-localname)))
+    (cl-macrolet ((cappend (&rest args)
+		    `(setf cmd (apply #'concat cmd (list ,@args))))
+		  (cprepend (&rest args)
+		    `(setf cmd (apply #'concat ,@args (list cmd)))))
+      (when input
+	(cprepend "echo '" (replace-regexp-in-string "'" "'\"'\"'" input)
+		  "' | "))
+      (when (and (listp destination) (stringp (cadr destination)))
+	(cappend " 2>'" stderr-local "'"))
+      (cappend "; export RET=$?")
+      (cappend "; echo -n " stderr-magic
+	       "; if [ -e '" stderr-local "' ]"
+	       "; then cat '" stderr-local "'; fi")
+      (cprepend "cd " dir ";")
+      (cappend "; echo $RET " done-magic "; cd - > /dev/null\n"))
+    (when magit-boost-debug
+      (save-excursion
+	(goto-char (point-max))
+	(insert cmd)))
+    (setq magit-boost-cmd-stdout (list (point-max)))
+    (process-send-string (get-buffer-process (current-buffer)) cmd)))
+
+(defun magit-boost-filter (process string)
+  (with-current-buffer (process-buffer process)
+    (goto-char (point-max))
+    (insert string)
+    (when (re-search-backward "\\([0-9]+\\) MAGIT_BOOST_DONE"
+			      (car magit-boost-cmd-stdout) t)
+      (setq magit-boost-cmd-ret (string-to-number (match-string 1)))
+      (let ((end (match-beginning 0)))
+	(if (re-search-backward "MAGIT_BOOST_STDERR"
+				(car magit-boost-cmd-stdout) t)
+	    (progn
+	      (setcdr magit-boost-cmd-stdout (list (match-beginning 0)))
+	      (setq magit-boost-cmd-stderr (list (match-end 0) end)))
+	  (setcdr magit-boost-cmd-stdout (list end))))
+      (setq magit-boost-cmd-state 'complete))))
 
 (defun magit-boost-process-cmd (cmd input destination)
   "Execute a shell command CMD."
   (let ((connection-type (unless (and input (string-search "\r" input))
 			   'pty))
-	(dir (with-parsed-tramp-file-name default-directory c
-	       c-localname))
-	(done-magic "MAGIT_BOOST_DONE")
-	(stderr-magic "MAGIT_BOOST_STDERR")
-	(stderr-local "/tmp/magit-boost-stderr")
-	stdout ret stderr-dest)
+	stdout ret)
     (with-magit-boost-buffer-create default-directory connection-type
-      (with-magit-boost-lock
-	(cl-macrolet ((cappend (&rest args)
-			`(setf cmd (apply #'concat cmd (list ,@args))))
-		      (cprepend (&rest args)
-			`(setf cmd (apply #'concat ,@args (list cmd)))))
-	  (when input
-	    (cprepend "echo '" (replace-regexp-in-string "'" "'\"'\"'" input)
-		      "' | "))
-	  (when (and (listp destination) (stringp (cadr destination)))
-	    (setf stderr-dest (cadr destination))
-	    (cappend " 2>'" stderr-local "'"))
-	  (cappend "; export RET=$?")
-	  (when stderr-dest
-	    (cappend "; echo -n " stderr-magic
-		     "; if [ -e '" stderr-local "' ]"
-		     "; then cat '" stderr-local "'; fi"))
-	  (cprepend "cd " dir ";")
-	  (cappend "; echo " done-magic " $RET; cd - > /dev/null\n"))
-	(when magit-boost-debug
-	  (save-excursion
-	    (goto-char (point-max))
-	    (insert cmd)))
-	(let ((process (get-buffer-process (current-buffer)))
-	      (start (point-max))
-	      (regexp (concat done-magic " \\([0-9]+\\)")))
-	  (process-send-string process cmd)
-	  (while (not ret)
-	    (accept-process-output process 1 nil t)
-	    (save-excursion
-	      (goto-char (point-max))
-	      (when (re-search-backward regexp start t)
-		(setf stdout (buffer-substring start (match-beginning 0))
-		      ret (string-to-number (match-string 1)))))))
-	(when stderr-dest
-	  (let ((split (split-string stdout stderr-magic)))
-	    (setf stdout (car split))
-	    (let ((err (cadr split)))
-	      (unless (string-empty-p err)
-		(write-region err nil stderr-dest)))))
+      (magit-boost-submit-cmd cmd input destination)
+      (let ((process (get-buffer-process (current-buffer))))
+	(while (eq magit-boost-cmd-state 'running)
+	  (accept-process-output process 1 nil t))
+	(setf stdout (apply #'buffer-substring magit-boost-cmd-stdout))
+	(when (and magit-boost-cmd-stderr
+		   (listp destination) (stringp (cadr destination)))
+	  (let ((err (apply #'buffer-substring magit-boost-cmd-stderr)))
+	    (unless (string-empty-p err)
+	      (write-region err nil (cadr destination)))))
 	(unless magit-boost-debug
-	  (erase-buffer))))
+	  (erase-buffer))
+	(setf ret magit-boost-cmd-ret)
+	(magit-boost-cmd-init)))
     (when (and (numberp ret) (= ret 0) destination)
       (insert stdout))
     ret))
