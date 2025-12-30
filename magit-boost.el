@@ -105,12 +105,6 @@ buffer.")
 	magit-boost-cmd-stderr '()
 	magit-boost-cmd-ret -1))
 
-(defun magit-boost-buffers ()
-  "Return a list of all Magit Boost buffers."
-  (seq-filter (lambda (b)
-		(string-prefix-p magit-boost-buffer-name (buffer-name b)))
-	      (buffer-list)))
-
 (defvar-local magit-boost-connection-type nil
   "Buffer-local variable specifying the connection type for the Magit Bash
 process.
@@ -138,31 +132,40 @@ type is chosen for each Git command execution.")
 	(string-trim (buffer-string))
       (error "Failed to read the git tree"))))
 
-(defun magit-boost-new-buffer (dir connection-type)
+(defun magit-boost-create-buffer (dir buffer connection-type)
   "Create and return a new Magit Boost buffer for DIR with
-CONNECTION-TYPE."
-  (when-let ((index (string-match "\.git/" dir)))
-    (setf dir (substring dir 0 index)))
+CONNECTION-TYPE. If BUFFER is not nil, it clones the buffer
+variables instead of determining them."
   (setf dir
-	(with-temp-buffer
-	  (setq default-directory dir)
-	  (with-parsed-tramp-file-name (expand-file-name dir) nil
-	    (if (= (process-file "git" nil t nil "rev-parse" "--show-toplevel") 0)
-		(tramp-make-tramp-file-name v (string-trim (buffer-string)))))))
-  (if dir
-    (let* ((buf-name (format magit-boost-buffer-name))
-	   (buffer (generate-new-buffer buf-name)))
-      (uniquify-rationalize-file-buffer-names buf-name dir buffer)
-      (with-current-buffer buffer
+	(if buffer
+	    (with-current-buffer buffer
+	      default-directory)
+	  (with-temp-buffer
+	    (setq default-directory dir)
+	    (with-parsed-tramp-file-name (expand-file-name dir) nil
+	      (if (= (process-file "git" nil t nil "rev-parse" "--show-toplevel") 0)
+		  (tramp-make-tramp-file-name v (string-trim (buffer-string))))))))
+  (unless dir
+    (error "No git repository found"))
+  (let* ((buf-name magit-boost-buffer-name)
+	 (new-buffer (generate-new-buffer buf-name)))
+    (uniquify-rationalize-file-buffer-names buf-name dir new-buffer)
+    (with-current-buffer new-buffer
+      (if buffer
+	  (dolist (var '(default-directory
+			 magit-boost-git-dir
+			 magit-boost-git-tree-files
+			 magit-boost-git-dir-truename))
+	    (set var (with-current-buffer buffer
+		       (symbol-value var))))
 	(let ((git-dir (magit-boost-git-dir dir)))
 	  (setq default-directory (concat dir "/")
 		magit-boost-git-dir git-dir
 		magit-boost-git-tree-files (list (concat default-directory git-dir))
-		magit-boost-git-dir-truename (file-truename git-dir)
-		magit-boost-connection-type connection-type))
-	(magit-boost-cmd-init))
-      buffer)
-    (error "No git repository found")))
+		magit-boost-git-dir-truename (file-truename git-dir))))
+      (setq magit-boost-connection-type connection-type)
+      (magit-boost-cmd-init))
+    new-buffer))
 
 (defun magit-boost-in-git-dir (filename)
   (when magit-boost-git-dir
@@ -170,15 +173,22 @@ CONNECTION-TYPE."
       (or (string-prefix-p git-dir filename)
 	  (string-prefix-p magit-boost-git-dir-truename filename)))))
 
-(defun magit-boost-buffer (filename connection-type)
-  (cl-flet ((is-buffer-for (connection-type filename buffer)
-	      (with-current-buffer buffer
-		(and (eq magit-boost-cmd-state 'free)
-		     (eq magit-boost-connection-type connection-type)
-		     (or (string-prefix-p default-directory filename)
-			 (magit-boost-in-git-dir filename))))))
-    (cl-find filename (magit-boost-buffers)
-	     :test (apply-partially #'is-buffer-for connection-type))))
+(defun magit-boost-buffers (filename)
+  "Return a list of Magit Boost buffers for FILENAME."
+  (seq-filter (lambda (buffer)
+		(with-current-buffer buffer
+		  (and magit-boost-cmd-state
+		       (or (string-prefix-p default-directory filename)
+			   (magit-boost-in-git-dir filename)))))
+	      (buffer-list)))
+
+(defun magit-boost-buffer (filename connection-type &optional buffers)
+  (let ((buffers (or buffers (magit-boost-buffers filename))))
+    (cl-flet ((available-p (buffer)
+		(with-current-buffer buffer
+		  (and (eq magit-boost-cmd-state 'free)
+		       (eq magit-boost-connection-type connection-type)))))
+      (car (seq-filter #'available-p buffers)))))
 
 (defmacro with-magit-boost-buffer (directory connection-type &rest body)
   (declare (indent 2))
@@ -191,8 +201,12 @@ CONNECTION-TYPE."
 
 (defun magit-boost-buffer-create (dir connection-type)
   "Return a Magit Boost buffer associated with DIR, creating one if necessary."
-  (let ((buffer (or (magit-boost-buffer dir connection-type)
-		 (magit-boost-new-buffer dir connection-type))))
+  (let* ((buffers (magit-boost-buffers dir))
+	 (available (magit-boost-buffer dir connection-type buffers))
+	 (buffer (or available
+		     (magit-boost-create-buffer dir (unless available
+						      (car buffers))
+						connection-type))))
     (unless (get-buffer-process buffer)
       (let* ((process-connection-type connection-type)
 	     (process (start-file-process "magit-boost-process" buffer "bash")))
