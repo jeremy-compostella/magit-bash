@@ -501,6 +501,11 @@ This avoids invoking the slower default implementation of
       "Git"
     (apply orig-fun args)))
 
+(defun magit-boost-handle-vc-registered (orig-fun file)
+  (if (magit-boost-buffer file 'pty)
+      '(Git)
+    (funcall orig-fun file)))
+
 (defun magit-boost-start-file-process (orig-fun name buffer program &rest args)
   (if (string= program "git")
       (with-magit-boost-buffer default-directory 'pty
@@ -543,7 +548,8 @@ persistent Bash process."
 		   (tramp-sh-handle-file-writable-p . magit-boost-tramp-sh-handle-file-writable-p)
 		   (insert-file-contents . magit-boost-insert-file-contents)
 		   (with-editor-process-filter . magit-boost-with-editor-process-filter)
-		   (start-file-process . magit-boost-start-file-process))))
+		   (start-file-process . magit-boost-start-file-process)
+		   (tramp-sh-handle-vc-registered . magit-boost-handle-vc-registered))))
   (if magit-boost-mode
       (dolist (advice advices)
 	(advice-add (car advice) :around (cdr advice)))
