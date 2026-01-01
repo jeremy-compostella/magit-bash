@@ -18,6 +18,64 @@ Magit, by default, is highly optimized for local Git repositories where shell co
 
 In my testing, these optimizations have led to a remarkable 3-4x acceleration of Magit command execution times on remote repositories. Commands that previously took 10-15 seconds now complete in a few seconds, transforming the Magit experience from tedious to productive on slow networks.
 
+#+begin_src python :var tbl=performances :colnames no :results output file :file performances.png :exports results
+  import pandas as pd
+  import numpy as np
+  import matplotlib.pyplot as plt
+  import sys
+  import matplotlib as mpl
+  index = np.arange(len(tbl) - 1)
+  bar_width = 0.3
+
+  # Plot bars
+  fig, ax = plt.subplots()
+
+  data = sorted(tbl[1:], key=lambda x: x[1])
+
+  colours = ["#c81d25", "#ff5a5f"]
+  cmap = mpl.colors.LinearSegmentedColormap.from_list("colour_map", colours, N=256)
+  norm = mpl.colors.Normalize(min([x[2] / x[1] for x in data]),
+			      max([x[2] / x[1] for x in data]))
+  vanilla = ax.barh(index, [x[1] for x in data], bar_width,
+		  label=tbl[0][1], color=cmap(norm([x[2] / x[1] for x in data])))
+  ax.bar_label(vanilla, labels=[f'{x[1]:,.1f}s' for x in data],
+	       padding=3, color='black', fontsize=8)
+
+  colours = ["#2196f3", "#bbdefb"]
+  cmap = mpl.colors.LinearSegmentedColormap.from_list("colour_map", colours, N=256)
+  norm = mpl.colors.Normalize(min([x[2] / x[1] for x in data]),
+			      max([x[2] / x[1] for x in data]))
+  boost = ax.barh(index + bar_width, [x[2] for x in data],
+		  bar_width, label=tbl[0][2],
+		  color=cmap(norm([x[2] / x[1] for x in data])))
+  ax.bar_label(boost, labels=[f'{x[2]:,.1f}s' for x in data],
+	       padding=3, color='black', fontsize=8)
+  ax.spines[['top','left','bottom', 'right']].set_visible(False)
+
+  # Add in title and subtitle
+  ax.text(x=0.12, y=.93, s="Performance comparison of Magit commands",
+	  transform=fig.transFigure, ha='left', fontsize=14, weight='bold',
+	  alpha=.8)
+
+  ax.grid(which="major", axis='x', color='#DAD8D7', alpha=0.5, zorder=1)
+  ax.grid(which="major", axis='y', color='#DAD8D7', alpha=0.5, zorder=1)
+  ax.set_yticks(index + bar_width / 2)
+  ax.set_yticklabels([x[0] for x in data])
+  ax.legend()
+
+  plt.tick_params(
+    axis='x',          # changes apply to the x-axis
+    which='both',      # both major and minor ticks are affected
+    bottom=False,      # ticks along the bottom edge are off
+    top=False,         # ticks along the top edge are off
+    labelbottom=False) # labels along the bottom edge are off
+  plt.tight_layout()
+  fig.savefig(sys.stdout.buffer)
+#+end_src
+
+#+RESULTS:
+[[file:performances.png]]
+
 * Additional Feature: Progress Reporting
 
 Beyond raw speed, Magit Boost also offers an optional progress reporting mode. This mode provides visual feedback in the echo area, showing which Git command is currently executing and logging the total execution time of major Magit operations. This is invaluable on slow networks, as it confirms that Magit is actively working and allows users to observe the tangible performance benefits of Magit Boost in real-time.
@@ -58,18 +116,20 @@ Magit-Boost disables itself on local Git repositories where it can be counter-pr
 7. magit-rebase-interactive does not do anything every other times
 8. Should magit-boost-filter check on being on a Magit Boost buffer?
 9. commit amend crash on local repository
+* Performance Tests Raw Data :noexport:
+#+name: commit-amend-during-rebase
+|  Magit | Magit Boost |
+|--------+-------------|
+|  11.55 |        2.78 |
+|  10.89 |        2.67 |
+|  10.97 |        2.37 |
+|  11.32 |        2.40 |
+|  11.21 |        2.40 |
+|--------+-------------|
+| 11.188 |        2.52 |
+#+tblfm: @>$1=vmean(@2..@-1)::@>$2=vmean(@2..@-1);%.02f
 
-* Performance Tests
-#+caption: Amend on rebase
-| Magit | Magit Boost |
-|-------+-------------|
-| 11.55 |        2.78 |
-| 10.89 |        2.67 |
-| 10.97 |        2.37 |
-| 11.32 |        2.40 |
-| 11.21 |        2.40 |
-
-#+caption:  Refresh on status with on-going rebase
+#+name: status-during-rebase
 | Magit | Magit Boost |
 |-------+-------------|
 |  8.99 |        4.41 |
@@ -77,8 +137,11 @@ Magit-Boost disables itself on local Git repositories where it can be counter-pr
 |  9.12 |        3.59 |
 |  8.86 |        4.01 |
 |  9.06 |        3.65 |
+|-------+-------------|
+| 9.048 |        3.89 |
+#+tblfm: @>$1=vmean(@2..@-1)::@>$2=vmean(@2..@-1);%.02f
 
-#+caption:  Refresh on simple status (three diffs)
+#+name: status
 | Magit | Magit Boost |
 |-------+-------------|
 |  5.96 |        1.60 |
@@ -86,8 +149,11 @@ Magit-Boost disables itself on local Git repositories where it can be counter-pr
 |  5.63 |        1.99 |
 |  5.72 |        1.90 |
 |  5.82 |        1.95 |
+|-------+-------------|
+| 5.746 |        1.89 |
+#+tblfm: @>$1=vmean(@2..@-1)::@>$2=vmean(@2..@-1);%.02f
 
-#+caption:  Magit rebase interactive
+#+name:  rebase-interactive
 | Magit | Magit Boost |
 |-------+-------------|
 |  8.81 |        3.61 |
@@ -95,8 +161,11 @@ Magit-Boost disables itself on local Git repositories where it can be counter-pr
 |  8.95 |        2.60 |
 |  8.98 |        3.44 |
 |  8.99 |        2.61 |
+|-------+-------------|
+| 8.896 |        3.03 |
+#+tblfm: @>$1=vmean(@2..@-1)::@>$2=vmean(@2..@-1);%.02f
 
-#+caption:  Magit show commit
+#+name:  show-commit
 | Magit | Magit Boost |
 |-------+-------------|
 |  7.79 |        3.72 |
@@ -104,3 +173,21 @@ Magit-Boost disables itself on local Git repositories where it can be counter-pr
 |  6.10 |        0.94 |
 |  6.08 |        1.02 |
 |  6.60 |        1.10 |
+|-------+-------------|
+| 6.632 |        1.56 |
+#+tblfm: @>$1=vmean(@2..@-1)::@>$2=vmean(@2..@-1);%.02f
+
+#+name: performances
+| Magit action         | Vanilla | Magit Boost |
+|----------------------+---------+-------------|
+| Show commit          |   6.632 |        1.56 |
+| Rebase Interactive   |   8.896 |        3.03 |
+| Status               |   5.746 |        1.89 |
+| Status during rebase |   9.048 |        3.89 |
+| Commit during rebase |  11.188 |        2.52 |
+#+tblfm: @2$2=remote(show-commit, @>$1)::@2$3=remote(show-commit, @>$2)
+#+tblfm: @3$2=remote(rebase-interactive, @>$1)::@3$3=remote(rebase-interactive, @>$2)
+#+tblfm: @4$2=remote(status, @>$1)::@4$3=remote(status, @>$2)
+#+tblfm: @5$2=remote(status-during-rebase, @>$1)::@5$3=remote(status-during-rebase, @>$2)
+#+tblfm: @6$2=remote(commit-amend-during-rebase, @>$1)::@6$3=remote(commit-amend-during-rebase, @>$2)
+
