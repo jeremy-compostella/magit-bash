@@ -98,12 +98,17 @@ buffer.")
 (defvar-local magit-boost-cmd-ret -1
   "Variable storing the exit code of the last command executed.")
 
+(defvar-local magit-boost-cmd-flush-file-properties nil
+  "Variable indicating whether Tramp file properties should be
+flushed after the current command completes.")
+
 (defun magit-boost-cmd-init ()
   "Initialize the buffer-local command state variables."
   (setq magit-boost-cmd-state 'free
 	magit-boost-cmd-stdout '()
 	magit-boost-cmd-stderr '()
-	magit-boost-cmd-ret -1))
+	magit-boost-cmd-ret -1
+	magit-boost-cmd-flush-file-properties nil))
 
 (defvar-local magit-boost-connection-type nil
   "Buffer-local variable specifying the connection type for the Magit Bash
@@ -269,14 +274,19 @@ variables instead of determining them."
 		(setq magit-boost-cmd-stderr (list (match-end 0) end)))
 	    (setcdr magit-boost-cmd-stdout (list end))))
 	(setq magit-boost-cmd-state 'complete))
-      (when (and (eq magit-boost-cmd-state 'complete) former-buffer)
-	(magit-refresh)
-	;; The asynchronous git command completed, we can reclaim the process
-	;; back.
-	(set-process-buffer process former-buffer)
-	(set-process-filter process #'magit-boost-filter)
-	(process-put process 'magit-boost-buffer nil)
-	(setq magit-boost-cmd-state 'free)))))
+      (when (eq magit-boost-cmd-state 'complete)
+	(when magit-boost-cmd-flush-file-properties
+	  (dolist (filename magit-boost-git-tree-files)
+	    (tramp-flush-file-properties
+	     (tramp-dissect-file-name filename) (tramp-file-local-name filename))))
+	(when former-buffer
+	  (magit-refresh)
+	  ;; The asynchronous git command completed, we can reclaim the process
+	  ;; back.
+	  (set-process-buffer process former-buffer)
+	  (set-process-filter process #'magit-boost-filter)
+	  (process-put process 'magit-boost-buffer nil)
+	  (setq magit-boost-cmd-state 'free))))))
 
 (defun magit-boost-process-cmd (cmd input destination)
   "Execute a shell command CMD."
@@ -523,6 +533,8 @@ This avoids invoking the slower default implementation of
 		  (process (get-buffer-process (current-buffer))))
 	      (set-process-filter process #'with-editor-process-filter)
 	      (magit-boost-submit-cmd cmd nil nil)
+	      (when (member "rebase" args)
+		(setq magit-boost-cmd-flush-file-properties t))
 	      ;; Magit is going to appropriate the buffer, we need to store
 	      ;; the original buffer to reclaim the process later.
 	      (process-put process 'magit-boost-buffer (current-buffer))
