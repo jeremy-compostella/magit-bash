@@ -225,7 +225,7 @@ variables instead of determining them."
   `(with-current-buffer (magit-boost-buffer-create ,directory ,connection-type)
      (progn ,@body)))
 
-(defun magit-boost-submit-cmd (cmd input destination)
+(defun magit-boost-submit-cmd (local-dir cmd input destination)
   (unless (eq magit-boost-cmd-state 'free)
     (error "Buffer is in unexpected %s state" magit-boost-cmd-state))
   (unless magit-boost-debug
@@ -234,8 +234,7 @@ variables instead of determining them."
   (let ((stderr-local "/tmp/magit-boost-stderr")
 	(stderr-magic "MAGIT_BOOST_STDERR")
 	(done-magic "MAGIT_BOOST_DONE")
-	(dir (with-parsed-tramp-file-name default-directory c
-	       c-localname)))
+	(dir local-dir))
     (cl-macrolet ((cappend (&rest args)
 		    `(setf cmd (apply #'concat cmd (list ,@args))))
 		  (cprepend (&rest args)
@@ -293,9 +292,11 @@ variables instead of determining them."
   "Execute a shell command CMD."
   (let ((connection-type (unless (and input (string-search "\r" input))
 			   'pty))
-	stdout ret)
+	(local-dir (tramp-file-name-localname
+		    (tramp-dissect-file-name default-directory)))
+	stdout ret )
     (with-magit-boost-buffer-create default-directory connection-type
-      (magit-boost-submit-cmd cmd input destination)
+      (magit-boost-submit-cmd local-dir cmd input destination)
       (let ((process (get-buffer-process (current-buffer))))
 	(while (eq magit-boost-cmd-state 'running)
 	  (accept-process-output process 1 nil t))
@@ -519,29 +520,31 @@ This avoids invoking the slower default implementation of
 
 (defun magit-boost-start-file-process (orig-fun name buffer program &rest args)
   (if (string= program "git")
-      (with-magit-boost-buffer default-directory 'pty
-	(when (file-remote-p default-directory)
-	  (unless (equal program "env")
-	    (push program args)
-	    (setq program "env"))
-	  (cl-flet* ((escape-quotes (str)
-		       (replace-regexp-in-string "'" "'\"'\"'" str))
-		     (format-arg (arg)
-		       (format "'%s'" (escape-quotes arg))))
-	    (let ((cmd (format "%s=%s %s"  with-editor--envvar
-			       (format-arg with-editor-sleeping-editor)
-			       (mapconcat #'format-arg args " ")))
-		  (process (get-buffer-process (current-buffer))))
-	      (set-process-filter process #'with-editor-process-filter)
-	      (magit-boost-submit-cmd cmd nil nil)
-	      (when (member "rebase" args)
-		(setq magit-boost-cmd-flush-file-properties t))
-	      ;; Magit is going to appropriate the buffer, we need to store
-	      ;; the original buffer to reclaim the process later.
-	      (process-put process 'magit-boost-buffer (current-buffer))
-	      (process-put process 'default-dir default-directory)
-	      (accept-process-output process 1 nil t)
-	      process))))
+      (let ((local-dir (tramp-file-name-localname
+		    (tramp-dissect-file-name default-directory))))
+	(with-magit-boost-buffer default-directory 'pty
+	  (when (file-remote-p default-directory)
+	    (unless (equal program "env")
+	      (push program args)
+	      (setq program "env"))
+	    (cl-flet* ((escape-quotes (str)
+			 (replace-regexp-in-string "'" "'\"'\"'" str))
+		       (format-arg (arg)
+			 (format "'%s'" (escape-quotes arg))))
+	      (let ((cmd (format "%s=%s %s"  with-editor--envvar
+				 (format-arg with-editor-sleeping-editor)
+				 (mapconcat #'format-arg args " ")))
+		    (process (get-buffer-process (current-buffer))))
+		(set-process-filter process #'with-editor-process-filter)
+		(magit-boost-submit-cmd local-dir cmd nil nil)
+		(when (member "rebase" args)
+		  (setq magit-boost-cmd-flush-file-properties t))
+		;; Magit is going to appropriate the buffer, we need to store
+		;; the original buffer to reclaim the process later.
+		(process-put process 'magit-boost-buffer (current-buffer))
+		(process-put process 'default-dir default-directory)
+		(accept-process-output process 1 nil t)
+		process)))))
     (apply orig-fun name buffer program args)))
 
 (defun magit-boost-with-editor-process-filter (orig-fun &rest args)
