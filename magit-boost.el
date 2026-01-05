@@ -263,30 +263,31 @@ variables instead of determining them."
     (with-current-buffer (or former-buffer (process-buffer process))
       (goto-char (point-max))
       (insert string)
-      (when (re-search-backward "\\([0-9]+\\) MAGIT_BOOST_DONE"
-				(car magit-boost-cmd-stdout) t)
-	(setq magit-boost-cmd-ret (string-to-number (match-string 1)))
-	(let ((end (match-beginning 0)))
-	  (if (re-search-backward "MAGIT_BOOST_STDERR"
+      (when (eq magit-boost-cmd-state 'running)
+	(when (re-search-backward "\\([0-9]+\\) MAGIT_BOOST_DONE"
 				  (car magit-boost-cmd-stdout) t)
-	      (progn
-		(setcdr magit-boost-cmd-stdout (list (match-beginning 0)))
-		(setq magit-boost-cmd-stderr (list (match-end 0) end)))
-	    (setcdr magit-boost-cmd-stdout (list end))))
-	(setq magit-boost-cmd-state 'complete))
-      (when (eq magit-boost-cmd-state 'complete)
-	(when magit-boost-cmd-flush-file-properties
-	  (dolist (filename magit-boost-git-tree-files)
-	    (tramp-flush-file-properties
-	     (tramp-dissect-file-name filename) (tramp-file-local-name filename))))
-	(when former-buffer
-	  (magit-refresh)
-	  ;; The asynchronous git command completed, we can reclaim the process
-	  ;; back.
-	  (set-process-buffer process former-buffer)
-	  (set-process-filter process #'magit-boost-filter)
-	  (process-put process 'magit-boost-buffer nil)
-	  (setq magit-boost-cmd-state 'free))))))
+	  (setq magit-boost-cmd-ret (string-to-number (match-string 1)))
+	  (let ((end (match-beginning 0)))
+	    (if (re-search-backward "MAGIT_BOOST_STDERR"
+				    (car magit-boost-cmd-stdout) t)
+		(progn
+		  (setcdr magit-boost-cmd-stdout (list (match-beginning 0)))
+		  (setq magit-boost-cmd-stderr (list (match-end 0) end)))
+	      (setcdr magit-boost-cmd-stdout (list end))))
+	  (setq magit-boost-cmd-state 'complete))
+	(when (eq magit-boost-cmd-state 'complete)
+	  (when magit-boost-cmd-flush-file-properties
+	    (dolist (filename magit-boost-git-tree-files)
+	      (tramp-flush-file-properties
+	       (tramp-dissect-file-name filename) (tramp-file-local-name filename))))
+	  (when former-buffer
+	    (magit-refresh)
+	    ;; The asynchronous git command completed, we can reclaim the process
+	    ;; back.
+	    (set-process-buffer process former-buffer)
+	    (set-process-filter process #'magit-boost-filter)
+	    (process-put process 'magit-boost-buffer nil)
+	    (setq magit-boost-cmd-state 'free)))))))
 
 (defun magit-boost-process-cmd (cmd input destination)
   "Execute a shell command CMD."
